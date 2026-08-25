@@ -291,7 +291,7 @@ Elasticsearch CA fingerprint:
 openssl x509 -fingerprint -sha256 -in /etc/elasticsearch/certs/http_ca.crt
 ```
 
-Example output config:
+Example output config (credentials + TLS are configured here):
 
 ```yaml
 output.elasticsearch:
@@ -303,19 +303,125 @@ output.elasticsearch:
     ca_trusted_fingerprint: "SHA256_WITHOUT_COLONS"
 ```
 
-Default Filebeat 9.3.0 data stream is typically:
+### Default data stream vs separate application index
+
+With the normal Filebeat 9.3.0 setup, events typically go to the Filebeat data stream:
 
 ```text
-filebeat-9.3.0
+filebeat-9.3.0                 <- data stream
+.ds-filebeat-9.3.0-YYYY.MM.DD-000001 <- backing index
 ```
 
-Backing index example:
+Multiple Filebeat clients can send events to the same data stream. Their events can still be distinguished with fields such as `host.name`, `agent.id`, etc.
+
+If a second application/project must NOT be mixed with the old Filebeat data, the simplest lab/exam solution is a separate custom index. Configure it in `/etc/filebeat/filebeat.yml`:
+
+```yaml
+setup.template.name: "app2-filebeat"
+setup.template.pattern: "app2-filebeat-*"
+
+output.elasticsearch:
+  hosts: ["https://192.168.176.175:9200"]
+  username: "elastic"
+  password: "PASSWORD"
+  index: "app2-filebeat-%{[agent.version]}"
+  ssl:
+    enabled: true
+    ca_trusted_fingerprint: "SHA256_WITHOUT_COLONS"
+```
+
+This produces a separate custom index such as:
 
 ```text
-.ds-filebeat-9.3.0-YYYY.MM.DD-000001
+app2-filebeat-9.3.0
 ```
 
-Kibana Data View:
+Important: setting `output.elasticsearch.index` does NOT automatically create a new data stream with that name. It is custom index naming. The goal here is simply to keep another application's logs separate from the existing Filebeat data.
+
+Create a separate Kibana Data View for it:
+
+```text
+app2-filebeat-*
+```
+
+If two different applications are collected by the SAME Filebeat instance, tag the inputs and route them conditionally with `output.elasticsearch.indices`. For example:
+
+```yaml
+filebeat.inputs:
+  - type: filestream
+    id: app1
+    enabled: true
+    paths:
+      - /var/log/app1/*.log
+    fields:
+      app: app1
+    fields_under_root: true
+
+  - type: filestream
+    id: app2
+    enabled: true
+    paths:
+      - /var/log/app2/*.log
+    fields:
+      app: app2
+    fields_under_root: true
+
+output.elasticsearch:
+  hosts: ["https://192.168.176.175:9200"]
+  username: "elastic"
+  password: "PASSWORD"
+  indices:
+    - index: "app1-%{[agent.version]}"
+      when.equals:
+        app: "app1"
+    - index: "app2-%{[agent.version]}"
+      when.equals:
+        app: "app2"
+```
+
+### Filebeat input example
+
+A basic `filestream` input reads a log file and adds a field that can later be used for filtering/routing:
+
+```yaml
+filebeat.inputs:
+  - type: filestream
+    id: my-application
+    enabled: true
+    paths:
+      - /var/log/myapp/*.log
+    fields:
+      app: myapp
+    fields_under_root: true
+```
+
+For a JSON/NDJSON log such as ModSecurity audit JSON:
+
+```yaml
+filebeat.inputs:
+  - type: filestream
+    id: modsecurity-json
+    enabled: true
+    paths:
+      - /var/log/modsec_audit.json
+    parsers:
+      - ndjson:
+          target: ""
+          add_error_key: true
+    fields:
+      log_type: modsecurity
+    fields_under_root: true
+```
+
+After changing Filebeat configuration:
+
+```bash
+filebeat test config
+filebeat test output
+systemctl restart filebeat
+```
+
+Kibana Data View for default Filebeat data:
 
 ```text
 filebeat-*
@@ -400,24 +506,6 @@ Check for duplicate/conflicting audit directives:
 
 ```bash
 grep -nE 'SecAudit(Log|Engine|LogFormat)' /etc/nginx/modsec/modsecurity.conf
-```
-
-Custom Filebeat JSON input:
-
-```yaml
-filebeat.inputs:
-  - type: filestream
-    id: modsecurity-json
-    enabled: true
-    paths:
-      - /var/log/modsec_audit.json
-    parsers:
-      - ndjson:
-          target: ""
-          add_error_key: true
-    fields:
-      log_type: modsecurity
-    fields_under_root: true
 ```
 
 Kibana filter:
