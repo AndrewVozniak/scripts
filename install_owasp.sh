@@ -1,18 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${EUID}" -ne 0 ]; then
+  echo "[ERROR] Run as root: sudo $0"
+  exit 1
+fi
+
 mkdir -p /etc/nginx/modsec
-# директория конфигов ModSecurity
+# directory for ModSecurity configuration
 
-git clone https://github.com/coreruleset/coreruleset /opt/coreruleset
-# скачиваем OWASP Core Rule Set
+if [ ! -d /opt/coreruleset/.git ]; then
+  git clone https://github.com/coreruleset/coreruleset /opt/coreruleset
+fi
+# download OWASP Core Rule Set
 
-mv /opt/coreruleset/crs-setup.conf.example /opt/coreruleset/crs-setup.conf
-# активируем основной CRS config
+if [ -f /opt/coreruleset/crs-setup.conf.example ] && [ ! -f /opt/coreruleset/crs-setup.conf ]; then
+  cp /opt/coreruleset/crs-setup.conf.example /opt/coreruleset/crs-setup.conf
+fi
+# activate CRS setup config
 
-mv /opt/coreruleset/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf.example \
-/opt/coreruleset/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
-# создаём файл для будущих исключений/false positives
+if [ -f /opt/coreruleset/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf.example ] && [ ! -f /opt/coreruleset/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf ]; then
+  cp /opt/coreruleset/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf.example \
+    /opt/coreruleset/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+fi
+# create exclusions file for future false-positive tuning
 
-cp /usr/local/src/ModSecurity/unicode.mapping /etc/nginx/modsec/
-# unicode normalization mapping
-
+cp /usr/local/src/ModSecurity/unicode.mapping /etc/nginx/modsec/unicode.mapping
 cp /usr/local/src/ModSecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
-# основной ModSecurity config
+# copy base ModSecurity configuration
+
+cat > /etc/nginx/modsec/main.conf <<'EOF'
+Include /etc/nginx/modsec/modsecurity.conf
+Include /opt/coreruleset/crs-setup.conf
+Include /opt/coreruleset/rules/*.conf
+EOF
+# main file referenced by nginx: modsecurity_rules_file /etc/nginx/modsec/main.conf;
+
+echo "[SUCCESS] OWASP CRS installed."
+echo "[INFO] Edit /etc/nginx/modsec/modsecurity.conf and set: SecRuleEngine On"
+echo "[INFO] Then add inside nginx http{} or server{}:"
+echo "       modsecurity on;"
+echo "       modsecurity_rules_file /etc/nginx/modsec/main.conf;"
